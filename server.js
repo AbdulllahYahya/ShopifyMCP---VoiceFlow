@@ -301,7 +301,7 @@ const mcpServer = new Server(
 );
 
 // Register tools/list handler
-mcpServer.setRequestHandler('tools/list', async () => {
+mcpServer.setRequestHandler('ListToolsRequest', async () => {
   console.log('Listing tools');
   return {
     tools: toolDefinitions,
@@ -309,7 +309,7 @@ mcpServer.setRequestHandler('tools/list', async () => {
 });
 
 // Register tools/call handler
-mcpServer.setRequestHandler('tools/call', async (request) => {
+mcpServer.setRequestHandler('CallToolRequest', async (request) => {
   const toolName = request.params.name;
   const args = request.params.arguments || {};
   
