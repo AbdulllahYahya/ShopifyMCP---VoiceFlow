@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "@modelcontextprotocol/sdk": "^0.5.0",
-    "shopify-mcp": "latest"
+    "@modelcontextprotocol/sdk": "^0.5.0"
   }
 }
