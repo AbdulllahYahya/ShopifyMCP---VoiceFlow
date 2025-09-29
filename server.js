@@ -1,4 +1,6 @@
 import express from 'express';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -53,151 +55,8 @@ async function shopifyGraphQL(query, variables = {}) {
   return result.data;
 }
 
-// Tool handlers
-const toolHandlers = {
-  'get-products': async (args) => {
-    const limit = args.limit || 10;
-    const query = `
-      query getProducts($first: Int!, $query: String) {
-        products(first: $first, query: $query) {
-          edges {
-            node {
-              id
-              title
-              descriptionHtml
-              vendor
-              productType
-              tags
-              status
-              totalInventory
-            }
-          }
-        }
-      }
-    `;
-    
-    const variables = {
-      first: limit,
-      query: args.searchTitle ? `title:*${args.searchTitle}*` : null,
-    };
-    
-    const data = await shopifyGraphQL(query, variables);
-    return data.products.edges.map(e => e.node);
-  },
-
-  'get-product-by-id': async (args) => {
-    const query = `
-      query getProduct($id: ID!) {
-        product(id: $id) {
-          id
-          title
-          descriptionHtml
-          vendor
-          productType
-          tags
-          status
-          totalInventory
-        }
-      }
-    `;
-    
-    const data = await shopifyGraphQL(query, { id: args.productId });
-    return data.product;
-  },
-
-  'get-customers': async (args) => {
-    const limit = args.limit || 10;
-    const query = `
-      query getCustomers($first: Int!, $query: String) {
-        customers(first: $first, query: $query) {
-          edges {
-            node {
-              id
-              firstName
-              lastName
-              email
-              phone
-              tags
-              ordersCount
-            }
-          }
-        }
-      }
-    `;
-    
-    const data = await shopifyGraphQL(query, {
-      first: limit,
-      query: args.searchQuery || null,
-    });
-    
-    return data.customers.edges.map(e => e.node);
-  },
-
-  'get-orders': async (args) => {
-    const limit = args.limit || 10;
-    const query = `
-      query getOrders($first: Int!) {
-        orders(first: $first) {
-          edges {
-            node {
-              id
-              name
-              email
-              totalPriceSet {
-                shopMoney {
-                  amount
-                  currencyCode
-                }
-              }
-              createdAt
-              displayFinancialStatus
-              displayFulfillmentStatus
-            }
-          }
-        }
-      }
-    `;
-    
-    const data = await shopifyGraphQL(query, { first: limit });
-    return data.orders.edges.map(e => e.node);
-  },
-
-  'get-order-by-id': async (args) => {
-    const query = `
-      query getOrder($id: ID!) {
-        order(id: $id) {
-          id
-          name
-          email
-          phone
-          totalPriceSet {
-            shopMoney {
-              amount
-              currencyCode
-            }
-          }
-          createdAt
-          displayFinancialStatus
-          displayFulfillmentStatus
-          shippingAddress {
-            address1
-            address2
-            city
-            province
-            country
-            zip
-          }
-        }
-      }
-    `;
-    
-    const data = await shopifyGraphQL(query, { id: args.orderId });
-    return data.order;
-  },
-};
-
-// Tool definitions
-const tools = [
+// Tool definitions and handlers
+const toolDefinitions = [
   {
     name: 'get-products',
     description: 'Get all products or search by title',
@@ -278,6 +137,159 @@ const tools = [
   },
 ];
 
+// Tool execution handlers
+async function executeGetProducts(args) {
+  const limit = args.limit || 10;
+  const query = `
+    query getProducts($first: Int!, $query: String) {
+      products(first: $first, query: $query) {
+        edges {
+          node {
+            id
+            title
+            descriptionHtml
+            vendor
+            productType
+            tags
+            status
+            totalInventory
+          }
+        }
+      }
+    }
+  `;
+  
+  const variables = {
+    first: limit,
+    query: args.searchTitle ? `title:*${args.searchTitle}*` : null,
+  };
+  
+  const data = await shopifyGraphQL(query, variables);
+  return data.products.edges.map(e => e.node);
+}
+
+async function executeGetProductById(args) {
+  const query = `
+    query getProduct($id: ID!) {
+      product(id: $id) {
+        id
+        title
+        descriptionHtml
+        vendor
+        productType
+        tags
+        status
+        totalInventory
+      }
+    }
+  `;
+  
+  const data = await shopifyGraphQL(query, { id: args.productId });
+  return data.product;
+}
+
+async function executeGetCustomers(args) {
+  const limit = args.limit || 10;
+  const query = `
+    query getCustomers($first: Int!, $query: String) {
+      customers(first: $first, query: $query) {
+        edges {
+          node {
+            id
+            firstName
+            lastName
+            email
+            phone
+            tags
+            ordersCount
+          }
+        }
+      }
+    }
+  `;
+  
+  const data = await shopifyGraphQL(query, {
+    first: limit,
+    query: args.searchQuery || null,
+  });
+  
+  return data.customers.edges.map(e => e.node);
+}
+
+async function executeGetOrders(args) {
+  const limit = args.limit || 10;
+  const query = `
+    query getOrders($first: Int!) {
+      orders(first: $first) {
+        edges {
+          node {
+            id
+            name
+            email
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            createdAt
+            displayFinancialStatus
+            displayFulfillmentStatus
+          }
+        }
+      }
+    }
+  `;
+  
+  const data = await shopifyGraphQL(query, { first: limit });
+  return data.orders.edges.map(e => e.node);
+}
+
+async function executeGetOrderById(args) {
+  const query = `
+    query getOrder($id: ID!) {
+      order(id: $id) {
+        id
+        name
+        email
+        phone
+        totalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+        createdAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        shippingAddress {
+          address1
+          address2
+          city
+          province
+          country
+          zip
+        }
+      }
+    }
+  `;
+  
+  const data = await shopifyGraphQL(query, { id: args.orderId });
+  return data.order;
+}
+
+// Map tool names to handlers
+const toolHandlers = {
+  'get-products': executeGetProducts,
+  'get-product-by-id': executeGetProductById,
+  'get-customers': executeGetCustomers,
+  'get-orders': executeGetOrders,
+  'get-order-by-id': executeGetOrderById,
+};
+
+// Store active transports
+let currentTransport = null;
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 
@@ -287,105 +299,112 @@ app.get('/health', (req, res) => {
   });
 });
 
-// MCP endpoints
-app.get('/', (req, res) => {
-  res.json({
-    name: 'shopify-mcp-server',
-    version: '1.0.0',
-    description: 'Shopify MCP Server for Voiceflow',
-    capabilities: ['tools'],
-  });
-});
+// SSE endpoint - this is where Voiceflow will connect
+app.get('/sse', authenticate, async (req, res) => {
+  console.log('New SSE connection established');
+  
+  // Validate environment variables
+  if (!process.env.SHOPIFY_ACCESS_TOKEN || !process.env.MYSHOPIFY_DOMAIN) {
+    console.error('Missing Shopify credentials');
+    return res.status(500).json({ 
+      error: 'Missing SHOPIFY_ACCESS_TOKEN or MYSHOPIFY_DOMAIN' 
+    });
+  }
 
-// List tools (MCP standard)
-app.post('/tools/list', authenticate, (req, res) => {
-  res.json({
-    tools: tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
-  });
-});
-
-// Also support GET for tools list
-app.get('/tools/list', authenticate, (req, res) => {
-  res.json({
-    tools: tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
-  });
-});
-
-// Call tool (MCP standard)
-app.post('/tools/call', authenticate, async (req, res) => {
   try {
-    const { name, arguments: args } = req.body;
-    
-    if (!name) {
-      return res.status(400).json({ error: 'Tool name is required' });
-    }
+    // Create new MCP server instance
+    const mcpServer = new Server(
+      {
+        name: 'shopify-mcp-server',
+        version: '1.0.0',
+      },
+      {
+        capabilities: {
+          tools: {},
+        },
+      }
+    );
 
-    const handler = toolHandlers[name];
-    if (!handler) {
-      return res.status(404).json({ error: `Tool not found: ${name}` });
-    }
-
-    console.log(`Executing tool: ${name}`, args);
-    const result = await handler(args || {});
-    
-    res.json({
-      content: [{
-        type: 'text',
-        text: JSON.stringify(result, null, 2),
-      }],
+    // Register tools/list handler
+    mcpServer.setRequestHandler('tools/list', async () => {
+      console.log('Listing tools');
+      return {
+        tools: toolDefinitions,
+      };
     });
+
+    // Register tools/call handler
+    mcpServer.setRequestHandler('tools/call', async (request) => {
+      const toolName = request.params.name;
+      const args = request.params.arguments || {};
+      
+      console.log(`Calling tool: ${toolName}`, args);
+      
+      const handler = toolHandlers[toolName];
+      if (!handler) {
+        throw new Error(`Unknown tool: ${toolName}`);
+      }
+
+      try {
+        const result = await handler(args);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        console.error(`Error executing tool ${toolName}:`, error);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Error: ${error.message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    });
+
+    // Create SSE transport
+    currentTransport = new SSEServerTransport('/messages', res);
+    
+    // Connect server to transport
+    await mcpServer.connect(currentTransport);
+    
+    console.log('Shopify MCP server connected via SSE');
   } catch (error) {
-    console.error('Tool execution error:', error);
-    res.status(500).json({
-      error: error.message,
-      content: [{
-        type: 'text',
-        text: `Error: ${error.message}`,
-      }],
-    });
+    console.error('Error setting up SSE connection:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
-// Alternative endpoint format that some MCP clients expect
-app.post('/mcp/tools/call', authenticate, async (req, res) => {
-  try {
-    const { name, arguments: args } = req.body;
-    
-    if (!name) {
-      return res.status(400).json({ error: 'Tool name is required' });
+// POST endpoint for messages (required by SSE transport)
+app.post('/messages', authenticate, async (req, res) => {
+  console.log('Received message on /messages endpoint');
+  
+  if (currentTransport) {
+    try {
+      await currentTransport.handlePostMessage(req, res);
+    } catch (error) {
+      console.error('Error handling POST message:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message });
+      }
     }
-
-    const handler = toolHandlers[name];
-    if (!handler) {
-      return res.status(404).json({ error: `Tool not found: ${name}` });
-    }
-
-    console.log(`Executing tool: ${name}`, args);
-    const result = await handler(args || {});
-    
-    res.json({
-      result: result,
-      success: true,
-    });
-  } catch (error) {
-    console.error('Tool execution error:', error);
-    res.status(500).json({
-      error: error.message,
-      success: false,
-    });
+  } else {
+    res.status(503).json({ error: 'No active SSE connection' });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`Shopify MCP Server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Tools list: http://localhost:${PORT}/tools/list`);
+  console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`Messages endpoint: http://localhost:${PORT}/messages`);
 });
