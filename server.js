@@ -1,4 +1,5 @@
 import express from 'express';
+import { spawn } from 'child_process';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -23,191 +24,233 @@ const authenticate = (req, res, next) => {
   next();
 };
 
-// Shopify GraphQL
-async function shopifyGraphQL(query, variables = {}) {
-  const response = await fetch(`https://${process.env.MYSHOPIFY_DOMAIN}/admin/api/2024-01/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
+// Keep track of active MCP processes
+let mcpProcess = null;
+let toolsList = null;
+
+// Initialize the Shopify MCP server as a subprocess
+function initializeMCPServer() {
+  if (!process.env.SHOPIFY_ACCESS_TOKEN || !process.env.MYSHOPIFY_DOMAIN) {
+    console.error('Missing Shopify credentials');
+    return;
+  }
+
+  console.log('Starting Shopify MCP server...');
+  
+  mcpProcess = spawn('npx', [
+    'shopify-mcp',
+    '--accessToken', process.env.SHOPIFY_ACCESS_TOKEN,
+    '--domain', process.env.MYSHOPIFY_DOMAIN
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe']
   });
 
-  if (!response.ok) throw new Error(`Shopify API error: ${response.statusText}`);
-  const result = await response.json();
-  if (result.errors) throw new Error(`GraphQL errors: ${JSON.stringify(result.errors)}`);
-  return result.data;
+  mcpProcess.on('error', (error) => {
+    console.error('MCP Process error:', error);
+  });
+
+  mcpProcess.on('exit', (code) => {
+    console.log(`MCP process exited with code ${code}`);
+    mcpProcess = null;
+  });
+
+  // Send initialization request
+  const initRequest = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'voiceflow-bridge', version: '1.0.0' }
+    }
+  };
+
+  mcpProcess.stdin.write(JSON.stringify(initRequest) + '\n');
+
+  // Listen for tools list
+  let buffer = '';
+  mcpProcess.stdout.on('data', (data) => {
+    buffer += data.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const response = JSON.parse(line);
+          console.log('MCP Response:', JSON.stringify(response, null, 2));
+          
+          if (response.result && response.result.capabilities) {
+            console.log('MCP initialized successfully');
+            // Now request tools list
+            requestToolsList();
+          }
+          
+          if (response.result && response.result.tools) {
+            toolsList = response.result.tools;
+            console.log(`Loaded ${toolsList.length} tools`);
+          }
+        } catch (e) {
+          console.error('Failed to parse MCP response:', e);
+        }
+      }
+    }
+  });
+
+  mcpProcess.stderr.on('data', (data) => {
+    console.error('MCP stderr:', data.toString());
+  });
 }
 
-// Tool handlers
-const tools = {
-  'get-products': {
-    name: 'get-products',
-    description: 'Get all products or search by title',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        searchTitle: { type: 'string', description: 'Filter products by title (optional)' },
-        limit: { type: 'number', description: 'Maximum number of products to return', default: 10 },
-      },
-    },
-    handler: async (args) => {
-      const query = `query getProducts($first: Int!, $query: String) {
-        products(first: $first, query: $query) {
-          edges { node { id title descriptionHtml vendor productType tags status totalInventory } }
-        }
-      }`;
-      const data = await shopifyGraphQL(query, {
-        first: args?.limit || 10,
-        query: args?.searchTitle ? `title:*${args.searchTitle}*` : null,
-      });
-      return data.products.edges.map(e => e.node);
-    },
-  },
-  'get-product-by-id': {
-    name: 'get-product-by-id',
-    description: 'Get a specific product by ID',
-    inputSchema: {
-      type: 'object',
-      properties: { productId: { type: 'string', description: 'ID of the product to retrieve' } },
-      required: ['productId'],
-    },
-    handler: async (args) => {
-      const query = `query getProduct($id: ID!) {
-        product(id: $id) { id title descriptionHtml vendor productType tags status totalInventory }
-      }`;
-      const data = await shopifyGraphQL(query, { id: args.productId });
-      return data.product;
-    },
-  },
-  'get-customers': {
-    name: 'get-customers',
-    description: 'Get customers or search by name/email',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        searchQuery: { type: 'string', description: 'Filter customers by name or email (optional)' },
-        limit: { type: 'number', description: 'Maximum number of customers to return', default: 10 },
-      },
-    },
-    handler: async (args) => {
-      const query = `query getCustomers($first: Int!, $query: String) {
-        customers(first: $first, query: $query) {
-          edges { node { id firstName lastName email phone tags ordersCount } }
-        }
-      }`;
-      const data = await shopifyGraphQL(query, {
-        first: args?.limit || 10,
-        query: args?.searchQuery || null,
-      });
-      return data.customers.edges.map(e => e.node);
-    },
-  },
-  'get-orders': {
-    name: 'get-orders',
-    description: 'Get orders with optional filtering',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: 'Maximum number of orders to return', default: 10 },
-      },
-    },
-    handler: async (args) => {
-      const query = `query getOrders($first: Int!) {
-        orders(first: $first) {
-          edges {
-            node {
-              id name email
-              totalPriceSet { shopMoney { amount currencyCode } }
-              createdAt displayFinancialStatus displayFulfillmentStatus
+function requestToolsList() {
+  if (!mcpProcess) return;
+  
+  const listRequest = {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/list',
+    params: {}
+  };
+
+  mcpProcess.stdin.write(JSON.stringify(listRequest) + '\n');
+}
+
+// Call an MCP tool
+async function callMCPTool(toolName, args) {
+  return new Promise((resolve, reject) => {
+    if (!mcpProcess) {
+      reject(new Error('MCP server not initialized'));
+      return;
+    }
+
+    const requestId = Date.now();
+    const callRequest = {
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: args || {}
+      }
+    };
+
+    let responseHandler;
+    const timeout = setTimeout(() => {
+      mcpProcess.stdout.off('data', responseHandler);
+      reject(new Error('Tool call timeout'));
+    }, 30000);
+
+    let buffer = '';
+    responseHandler = (data) => {
+      buffer += data.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const response = JSON.parse(line);
+            if (response.id === requestId) {
+              clearTimeout(timeout);
+              mcpProcess.stdout.off('data', responseHandler);
+              
+              if (response.error) {
+                reject(new Error(response.error.message || 'Tool call failed'));
+              } else {
+                resolve(response.result);
+              }
             }
+          } catch (e) {
+            // Continue listening for more data
           }
         }
-      }`;
-      const data = await shopifyGraphQL(query, { first: args?.limit || 10 });
-      return data.orders.edges.map(e => e.node);
-    },
-  },
-  'get-order-by-id': {
-    name: 'get-order-by-id',
-    description: 'Get a specific order by ID',
-    inputSchema: {
-      type: 'object',
-      properties: { orderId: { type: 'string', description: 'Shopify order ID' } },
-      required: ['orderId'],
-    },
-    handler: async (args) => {
-      const query = `query getOrder($id: ID!) {
-        order(id: $id) {
-          id name email phone
-          totalPriceSet { shopMoney { amount currencyCode } }
-          createdAt displayFinancialStatus displayFulfillmentStatus
-          shippingAddress { address1 address2 city province country zip }
-        }
-      }`;
-      const data = await shopifyGraphQL(query, { id: args.orderId });
-      return data.order;
-    },
-  },
-};
+      }
+    };
 
-// Health
+    mcpProcess.stdout.on('data', responseHandler);
+    mcpProcess.stdin.write(JSON.stringify(callRequest) + '\n');
+  });
+}
+
+// Initialize on startup
+initializeMCPServer();
+
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    hasShopifyCredentials: !!(process.env.SHOPIFY_ACCESS_TOKEN && process.env.MYSHOPIFY_DOMAIN),
+    mcpReady: !!mcpProcess,
+    toolsLoaded: !!toolsList,
+    toolCount: toolsList?.length || 0
   });
 });
 
-// MCP Info
+// MCP info
 app.get('/', (req, res) => {
   res.json({
-    name: 'shopify-mcp-server',
+    name: 'shopify-mcp-bridge',
     version: '1.0.0',
-    description: 'Shopify MCP Server',
-    capabilities: ['tools'],
+    description: 'HTTP bridge for Shopify MCP Server',
+    ready: !!mcpProcess && !!toolsList
   });
 });
 
-// List tools
-app.get('/tools', authenticate, (req, res) => {
-  res.json({
-    tools: Object.values(tools).map(t => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
-  });
-});
-
-// Call tool
-app.post('/tools/:toolName', authenticate, async (req, res) => {
+// List tools (MCP standard endpoint)
+app.post('/mcp', authenticate, async (req, res) => {
   try {
-    const tool = tools[req.params.toolName];
-    if (!tool) {
-      return res.status(404).json({ error: `Tool not found: ${req.params.toolName}` });
+    const { method, params } = req.body;
+
+    if (method === 'tools/list') {
+      if (!toolsList) {
+        return res.status(503).json({ error: 'Tools not yet loaded' });
+      }
+      return res.json({
+        jsonrpc: '2.0',
+        id: req.body.id || 1,
+        result: { tools: toolsList }
+      });
     }
 
-    console.log(`Executing tool: ${req.params.toolName}`, req.body);
-    const result = await tool.handler(req.body);
+    if (method === 'tools/call') {
+      const result = await callMCPTool(params.name, params.arguments);
+      return res.json({
+        jsonrpc: '2.0',
+        id: req.body.id || 1,
+        result: result
+      });
+    }
 
-    res.json({
-      success: true,
-      result: result,
-    });
+    res.status(400).json({ error: 'Unknown method' });
   } catch (error) {
-    console.error('Tool execution error:', error);
+    console.error('MCP endpoint error:', error);
     res.status(500).json({
-      success: false,
-      error: error.message,
+      jsonrpc: '2.0',
+      id: req.body.id || 1,
+      error: { code: -32603, message: error.message }
     });
   }
 });
 
+// Also support GET for listing tools
+app.get('/tools', authenticate, (req, res) => {
+  if (!toolsList) {
+    return res.status(503).json({ error: 'Tools not yet loaded' });
+  }
+  res.json({ tools: toolsList });
+});
+
+// Clean shutdown
+process.on('SIGTERM', () => {
+  if (mcpProcess) {
+    mcpProcess.kill();
+  }
+  process.exit(0);
+});
+
 app.listen(PORT, () => {
-  console.log(`✓ Shopify MCP Server running on port ${PORT}`);
+  console.log(`✓ Shopify MCP Bridge running on port ${PORT}`);
   console.log(`✓ Health: http://localhost:${PORT}/health`);
-  console.log(`✓ Tools: http://localhost:${PORT}/tools`);
+  console.log(`✓ MCP endpoint: http://localhost:${PORT}/mcp`);
 });
