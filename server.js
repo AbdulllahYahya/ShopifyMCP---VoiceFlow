@@ -1,6 +1,10 @@
 import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { 
+  ListToolsRequestSchema, 
+  CallToolRequestSchema 
+} from '@modelcontextprotocol/sdk/types.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
