@@ -287,6 +287,63 @@ const toolHandlers = {
   'get-order-by-id': executeGetOrderById,
 };
 
+// Create MCP server instance (singleton)
+const mcpServer = new Server(
+  {
+    name: 'shopify-mcp-server',
+    version: '1.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// Register tools/list handler
+mcpServer.setRequestHandler('tools/list', async () => {
+  console.log('Listing tools');
+  return {
+    tools: toolDefinitions,
+  };
+});
+
+// Register tools/call handler
+mcpServer.setRequestHandler('tools/call', async (request) => {
+  const toolName = request.params.name;
+  const args = request.params.arguments || {};
+  
+  console.log(`Calling tool: ${toolName}`, args);
+  
+  const handler = toolHandlers[toolName];
+  if (!handler) {
+    throw new Error(`Unknown tool: ${toolName}`);
+  }
+
+  try {
+    const result = await handler(args);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  } catch (error) {
+    console.error(`Error executing tool ${toolName}:`, error);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error: ${error.message}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+});
+
 // Store active transports
 let currentTransport = null;
 
@@ -312,70 +369,24 @@ app.get('/sse', authenticate, async (req, res) => {
   }
 
   try {
-    // Create new MCP server instance
-    const mcpServer = new Server(
-      {
-        name: 'shopify-mcp-server',
-        version: '1.0.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
-    );
-
-    // Register tools/list handler
-    mcpServer.setRequestHandler('tools/list', async () => {
-      console.log('Listing tools');
-      return {
-        tools: toolDefinitions,
-      };
-    });
-
-    // Register tools/call handler
-    mcpServer.setRequestHandler('tools/call', async (request) => {
-      const toolName = request.params.name;
-      const args = request.params.arguments || {};
-      
-      console.log(`Calling tool: ${toolName}`, args);
-      
-      const handler = toolHandlers[toolName];
-      if (!handler) {
-        throw new Error(`Unknown tool: ${toolName}`);
-      }
-
-      try {
-        const result = await handler(args);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        console.error(`Error executing tool ${toolName}:`, error);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error.message}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    });
-
-    // Create SSE transport
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Create SSE transport with the response object
     currentTransport = new SSEServerTransport('/messages', res);
     
     // Connect server to transport
     await mcpServer.connect(currentTransport);
     
     console.log('Shopify MCP server connected via SSE');
+    
+    // Keep connection alive
+    req.on('close', () => {
+      console.log('SSE connection closed');
+      currentTransport = null;
+    });
   } catch (error) {
     console.error('Error setting up SSE connection:', error);
     if (!res.headersSent) {
